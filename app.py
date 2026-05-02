@@ -5,39 +5,50 @@ import config
 
 app = Flask(__name__)
 
+# New logo filename
+LOGO_FILENAME = "6fd74d3c-95f0-46e8-ae74-c52a1c873ca2.png"
+
+def get_active_season():
+    # Safely get the season from config to prevent Internal Server Errors
+    season_key = getattr(config, 'CURRENT_SEASON', None)
+    seasons_dict = getattr(config, 'SEASONS', {})
+    return seasons_dict.get(season_key)
+
 def get_ebird(endpoint, api_key, params=None):
     url = f"https://api.ebird.org/v2/{endpoint}"
-    r = requests.get(url, headers={"X-eBirdApiToken": api_key}, params=params, timeout=10)
-    return r.json() if r.status_code == 200 else []
+    try:
+        r = requests.get(url, headers={"X-eBirdApiToken": api_key}, params=params, timeout=10)
+        return r.json() if r.status_code == 200 else []
+    except:
+        return []
 
 @app.route("/")
 def index():
-    season = config.SEASONS.get(config.CURRENT_SEASON)
-    return render_template_string(HTML_UI, title=season['title'])
+    season = get_active_season()
+    # If the config is broken, show a helpful error instead of a crash
+    if not season:
+        return f"<h1>Config Error</h1><p>Check your Secret File. CURRENT_SEASON ('{getattr(config, 'CURRENT_SEASON', 'None')}') must match a key in your SEASONS dictionary.</p>", 500
+    return render_template_string(HTML_UI, title=season.get('title', 'Birding Comp'), logo=LOGO_FILENAME)
 
 @app.route("/api/leaderboard")
 def leaderboard():
-    season = config.SEASONS.get(config.CURRENT_SEASON)
+    season = get_active_season()
+    if not season:
+        return jsonify({"error": "Season not found"}), 500
+
     start_dt = season['start'].date()
     end_dt = season['end'].date()
-    
     all_players_data = []
 
-    # 1. Gather all data
     for user in config.COMPETITORS:
-        # Note: 'recent' endpoint looks back 30 days. 
         obs = get_ebird(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {"detail": "full"})
         user_birds = {}
         for o in obs:
             try:
-                # Use raw obsDt to maintain exact time for 'First to Spot'
                 o_dt = datetime.strptime(o['obsDt'][:10], "%Y-%m-%d").date()
                 if start_dt <= o_dt <= end_dt:
                     code = o['speciesCode']
                     if code not in user_birds:
-                        # Fetch notes if available
-                        cl = get_ebird(f"product/checklist/view/{o['subId']}", user['api_key'])
-                        o['notes'] = cl.get('comments', '') if isinstance(cl, dict) else ''
                         user_birds[code] = o
             except: continue
         
@@ -47,27 +58,23 @@ def leaderboard():
             "birds": user_birds
         })
 
-    # 2. Calculate Badges (Unique & First to Spot)
     final_standings = []
     for i, player in enumerate(all_players_data):
         scored_birds = []
         for code, bird in player['birds'].items():
-            # Check if anyone else has it
             others = [all_players_data[j]['birds'][code] for j in range(len(all_players_data)) 
                       if i != j and code in all_players_data[j]['birds']]
             
             bird['is_unique'] = len(others) == 0
-            
             if not bird['is_unique']:
                 my_time = datetime.strptime(bird['obsDt'], "%Y-%m-%d %H:%M")
                 earliest = True
-                for other_bird in others:
-                    other_time = datetime.strptime(other_bird['obsDt'], "%Y-%m-%d %H:%M")
-                    if other_time < my_time: earliest = False
+                for ob in others:
+                    if datetime.strptime(ob['obsDt'], "%Y-%m-%d %H:%M") < my_time:
+                        earliest = False
                 bird['is_first'] = earliest
             else:
                 bird['is_first'] = True 
-
             scored_birds.append(bird)
 
         final_standings.append({
@@ -88,7 +95,6 @@ HTML_UI = """
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ title }}</title>
     <style>
         :root {
             --ebird-green: #6DB33F; --ebird-blue: #2A7AB0; --ebird-orange: #F4A300;
@@ -101,34 +107,32 @@ HTML_UI = """
         .container { max-width: 800px; margin: auto; padding: 10px; }
         .player-row { display: grid; grid-template-columns: 40px 1fr 100px; align-items: center; padding: 15px; border-bottom: 1px solid var(--border-gray); cursor: pointer; }
         .username { display: block; font-size: 1.2rem; font-weight: 700; color: var(--ebird-blue); text-transform: none !important; }
-        .realname { font-size: 0.85rem; color: #666; text-transform: none; }
+        .realname { font-size: 0.85rem; color: #666; }
         .count-num { font-size: 1.8rem; font-weight: 700; color: var(--ebird-green); }
         .bird-list { display: none; background: var(--panel-gray); padding: 0 15px; }
         .bird-entry { padding: 12px 0; border-bottom: 1px solid #ddd; }
-        .badge { font-size: 0.65rem; padding: 2px 5px; border-radius: 3px; font-weight: 800; margin-left: 5px; vertical-align: middle; }
+        .badge { font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; font-weight: 800; margin-left: 5px; vertical-align: middle; }
         .badge-unique { background: #e8f5e9; color: #2e7d32; border: 1px solid #2e7d32; }
         .badge-first { background: #fff3e0; color: #ef6c00; border: 1px solid #ef6c00; }
-        .notes { font-size: 0.85rem; font-style: italic; color: #555; margin-top: 5px; padding-left: 8px; border-left: 2px solid var(--ebird-green); }
     </style>
 </head>
 <body>
     <header>
-        <img src="/static/6fd74d3c-95f0-46e8-ae74-c52a1c873ca2.png" class="logo">
+        <img src="/static/{{ logo }}" class="logo">
         <h1 style="margin:0; font-size: 1.4rem;">{{ title }}</h1>
     </header>
     <div id="timer-bar" class="timer-bar">Loading...</div>
     <div class="container" id="leaderboard"></div>
-
     <script>
         async function update() {
             const r = await fetch('/api/leaderboard');
+            if (!r.ok) return;
             const d = await r.json();
             const now = new Date();
             const start = new Date(d.start);
             const end = new Date(d.end);
             const tBar = document.getElementById('timer-bar');
 
-            // COUNTDOWN LOGIC
             if (now < start) {
                 const diff = start - now;
                 const days = Math.floor(diff / 86400000);
@@ -143,7 +147,6 @@ HTML_UI = """
                 tBar.innerText = "🏆 COMPETITION COMPLETE";
             }
 
-            // LEADERBOARD LOGIC
             let html = "";
             d.players.forEach((p, i) => {
                 html += `
@@ -159,26 +162,19 @@ HTML_UI = """
                             ${b.is_unique ? '<span class="badge badge-unique">ONLY ME</span>' : ''}
                             ${b.is_first ? '<span class="badge badge-first">1ST</span>' : ''}
                             <div style="color:#777; font-size:0.8rem;">${b.obsDt} • ${b.locName}</div>
-                            ${b.notes ? `<div class="notes">${b.notes}</div>` : ''}
                         </div>
                     `).join('')}
                 </div>`;
             });
             document.getElementById('leaderboard').innerHTML = html;
         }
-
         function toggle(id) {
             const el = document.getElementById('list-' + id);
             el.style.display = el.style.display === 'block' ? 'none' : 'block';
         }
-
-        setInterval(update, 5000); // UI Refresh
-        setInterval(update, 300000); // Data refresh every 5 min
+        setInterval(update, 5000);
         update();
     </script>
 </body>
 </html>
 """
-
-if __name__ == "__main__":
-    app.run(debug=True)
