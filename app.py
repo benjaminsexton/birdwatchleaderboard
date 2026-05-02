@@ -113,7 +113,7 @@ HTML_UI = """
 </head>
 <body>
     <header>
-        <img src="/static/image_96675f.png" class="logo">
+        <img src="/static/6fd74d3c-95f0-46e8-ae74-c52a1c873ca2.png" class="logo">
         <h1 style="margin:0; font-size: 1.4rem;">{{ title }}</h1>
     </header>
     <div id="timer-bar" class="timer-bar">Loading...</div>
