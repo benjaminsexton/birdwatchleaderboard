@@ -41,16 +41,26 @@ def leaderboard():
     all_players_data = []
 
     for user in config.COMPETITORS:
-        obs = get_ebird(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {"detail": "full"})
+        # NEW ENDPOINT: This pulls YOUR specific observations directly
+        # It's much more reliable than the 'recent' feed for new games
+        obs = get_ebird(f"product/obs/user/{user['ebird_username']}", user['api_key'], {
+            "r": "world", # Look everywhere
+            "back": "30", # Look back 30 days
+            "includeProvisional": "true" # Show birds even if not 'confirmed' yet
+        })
+        
         user_birds = {}
-        for o in obs:
-            try:
-                o_dt = datetime.strptime(o['obsDt'][:10], "%Y-%m-%d").date()
-                if start_dt <= o_dt <= end_dt:
-                    code = o['speciesCode']
-                    if code not in user_birds:
-                        user_birds[code] = o
-            except: continue
+        # Ensure obs is a list before looping
+        if isinstance(obs, list):
+            for o in obs:
+                try:
+                    # Clean up the date format from eBird
+                    o_dt = datetime.strptime(o['obsDt'][:10], "%Y-%m-%d").date()
+                    if start_dt <= o_dt <= end_dt:
+                        code = o['speciesCode']
+                        if code not in user_birds:
+                            user_birds[code] = o
+                except: continue
         
         all_players_data.append({
             "name": user['real_name'],
@@ -58,6 +68,7 @@ def leaderboard():
             "birds": user_birds
         })
 
+    # ... (Keep the rest of your badge and sorting logic the same)
     final_standings = []
     for i, player in enumerate(all_players_data):
         scored_birds = []
