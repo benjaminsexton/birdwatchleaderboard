@@ -1,140 +1,180 @@
 import requests
 from flask import Flask, jsonify, render_template_string
-from datetime import datetime, timezone
+from datetime import datetime
 import config
 
 app = Flask(__name__)
 
-def get_data(endpoint, api_key, params=None):
+def get_ebird(endpoint, api_key, params=None):
     url = f"https://api.ebird.org/v2/{endpoint}"
-    headers = {"X-eBirdApiToken": api_key}
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-        return r.json() if r.status_code == 200 else []
-    except:
-        return []
+    r = requests.get(url, headers={"X-eBirdApiToken": api_key}, params=params, timeout=10)
+    return r.json() if r.status_code == 200 else []
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_UI)
+    season = config.SEASONS.get(config.CURRENT_SEASON)
+    return render_template_string(HTML_UI, title=season['title'])
 
 @app.route("/api/leaderboard")
 def leaderboard():
-    results = []
-    # Dates for filtering sightings
-    start_day = config.START_DATE.date()
-    end_day = config.END_DATE.date()
+    season = config.SEASONS.get(config.CURRENT_SEASON)
+    start_dt = season['start'].date()
+    end_dt = season['end'].date()
+    
+    all_players_data = []
 
+    # 1. Gather all data
     for user in config.COMPETITORS:
-        # Get last 30 days of sightings
-        raw_obs = get_data(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {"detail": "full"})
+        # Note: 'recent' endpoint looks back 30 days. 
+        obs = get_ebird(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {"detail": "full"})
+        user_birds = {}
+        for o in obs:
+            try:
+                # Use raw obsDt to maintain exact time for 'First to Spot'
+                o_dt = datetime.strptime(o['obsDt'][:10], "%Y-%m-%d").date()
+                if start_dt <= o_dt <= end_dt:
+                    code = o['speciesCode']
+                    if code not in user_birds:
+                        # Fetch notes if available
+                        cl = get_ebird(f"product/checklist/view/{o['subId']}", user['api_key'])
+                        o['notes'] = cl.get('comments', '') if isinstance(cl, dict) else ''
+                        user_birds[code] = o
+            except: continue
         
-        # Filter sightings by date and remove duplicates
-        unique_list = {}
-        for obs in raw_obs:
-            obs_dt = datetime.strptime(obs['obsDt'][:10], "%Y-%m-%d").date()
-            if start_day <= obs_dt <= end_day:
-                code = obs['speciesCode']
-                if code not in unique_list:
-                    # Get the specific checklist comments for this bird
-                    checklist = get_data(f"product/checklist/view/{obs['subId']}", user['api_key'])
-                    obs['user_notes'] = checklist.get('comments', '') if isinstance(checklist, dict) else ''
-                    unique_list[code] = obs
-
-        results.append({
+        all_players_data.append({
             "name": user['real_name'],
-            "count": len(unique_list),
-            "birds": list(unique_list.values())
+            "user": user['ebird_username'],
+            "birds": user_birds
+        })
+
+    # 2. Calculate Badges (Unique & First to Spot)
+    final_standings = []
+    for i, player in enumerate(all_players_data):
+        scored_birds = []
+        for code, bird in player['birds'].items():
+            # Check if anyone else has it
+            others = [all_players_data[j]['birds'][code] for j in range(len(all_players_data)) 
+                      if i != j and code in all_players_data[j]['birds']]
+            
+            bird['is_unique'] = len(others) == 0
+            
+            if not bird['is_unique']:
+                my_time = datetime.strptime(bird['obsDt'], "%Y-%m-%d %H:%M")
+                earliest = True
+                for other_bird in others:
+                    other_time = datetime.strptime(other_bird['obsDt'], "%Y-%m-%d %H:%M")
+                    if other_time < my_time: earliest = False
+                bird['is_first'] = earliest
+            else:
+                bird['is_first'] = True 
+
+            scored_birds.append(bird)
+
+        final_standings.append({
+            "name": player['name'],
+            "user": player['user'],
+            "count": len(scored_birds),
+            "birds": sorted(scored_birds, key=lambda x: x['obsDt'], reverse=True)
         })
 
     return jsonify({
-        "title": config.TITLE,
-        "start": config.START_DATE.isoformat(),
-        "end": config.END_DATE.isoformat(),
-        "players": sorted(results, key=lambda x: x['count'], reverse=True)
+        "start": season['start'].isoformat(),
+        "end": season['end'].isoformat(),
+        "players": sorted(final_standings, key=lambda x: x['count'], reverse=True)
     })
 
-# The "Face" of your website
 HTML_UI = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sexton Birding</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
     <style>
-        body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, sans-serif; text-align: center; padding: 20px; }
-        .logo { width: 120px; margin-bottom: 20px; }
-        .timer-box { background: #161b22; border: 2px solid #30363d; padding: 20px; border-radius: 15px; margin: 20px auto; max-width: 400px; }
-        .timer-val { font-size: 2.5rem; color: #f85149; font-weight: bold; display: block; }
-        .player-card { background: #161b22; border: 1px solid #30363d; padding: 15px; border-radius: 10px; margin: 10px auto; max-width: 450px; text-align: left; }
-        .score { float: right; font-size: 1.8rem; color: #58a6ff; }
-        .notes { font-size: 0.85rem; color: #8b949e; font-style: italic; margin-top: 5px; border-left: 2px solid #30363d; padding-left: 10px; }
+        :root {
+            --ebird-green: #6DB33F; --ebird-blue: #2A7AB0; --ebird-orange: #F4A300;
+            --bg-white: #FFFFFF; --panel-gray: #F5F5F5; --border-gray: #E0E0E0; --text-dark: #333;
+        }
+        body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; background: var(--bg-white); color: var(--text-dark); margin: 0; }
+        header { border-bottom: 4px solid var(--ebird-green); padding: 20px; text-align: center; }
+        .logo { height: 50px; margin-bottom: 10px; }
+        .timer-bar { background: var(--panel-gray); border-bottom: 1px solid var(--border-gray); color: var(--ebird-blue); padding: 12px; text-align: center; font-weight: bold; font-size: 0.9rem; text-transform: uppercase; }
+        .container { max-width: 800px; margin: auto; padding: 10px; }
+        .player-row { display: grid; grid-template-columns: 40px 1fr 100px; align-items: center; padding: 15px; border-bottom: 1px solid var(--border-gray); cursor: pointer; }
+        .username { display: block; font-size: 1.2rem; font-weight: 700; color: var(--ebird-blue); text-transform: none !important; }
+        .realname { font-size: 0.85rem; color: #666; text-transform: none; }
+        .count-num { font-size: 1.8rem; font-weight: 700; color: var(--ebird-green); }
+        .bird-list { display: none; background: var(--panel-gray); padding: 0 15px; }
+        .bird-entry { padding: 12px 0; border-bottom: 1px solid #ddd; }
+        .badge { font-size: 0.65rem; padding: 2px 5px; border-radius: 3px; font-weight: 800; margin-left: 5px; vertical-align: middle; }
+        .badge-unique { background: #e8f5e9; color: #2e7d32; border: 1px solid #2e7d32; }
+        .badge-first { background: #fff3e0; color: #ef6c00; border: 1px solid #ef6c00; }
+        .notes { font-size: 0.85rem; font-style: italic; color: #555; margin-top: 5px; padding-left: 8px; border-left: 2px solid var(--ebird-green); }
     </style>
 </head>
 <body>
-    <img src="/static/image_a23c6a.png" class="logo" alt="Logo">
-    <h1 id="main-title">Loading...</h1>
-    
-    <div class="timer-box">
-        <span id="timer-label" style="font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;">Loading Countdown...</span>
-        <span id="timer-display" class="timer-val">00:00:00</span>
-    </div>
-
-    <div id="leaderboard"></div>
+    <header>
+        <img src="/static/image_96675f.png" class="logo">
+        <h1 style="margin:0; font-size: 1.4rem;">{{ title }}</h1>
+    </header>
+    <div id="timer-bar" class="timer-bar">Loading...</div>
+    <div class="container" id="leaderboard"></div>
 
     <script>
-        async function refresh() {
+        async function update() {
             const r = await fetch('/api/leaderboard');
             const d = await r.json();
-            document.getElementById('main-title').innerText = d.title;
-
-            // Timer Logic
             const now = new Date();
             const start = new Date(d.start);
             const end = new Date(d.end);
-            const display = document.getElementById('timer-display');
-            const label = document.getElementById('timer-label');
+            const tBar = document.getElementById('timer-bar');
 
+            // COUNTDOWN LOGIC
             if (now < start) {
-                label.innerText = "Competition Starts In";
                 const diff = start - now;
-                const m = Math.floor(diff / 60000);
-                const s = Math.floor((diff % 60000) / 1000);
-                display.innerText = m + "m " + s + "s";
-            } else if (now < end) {
-                label.innerText = "Competition Ends In";
-                const diff = end - now;
                 const days = Math.floor(diff / 86400000);
                 const hrs = Math.floor((diff % 86400000) / 3600000);
-                display.innerText = days + "d " + hrs + "h";
+                const mins = Math.floor((diff % 3600000) / 60000);
+                const secs = Math.floor((diff % 60000) / 1000);
+                tBar.innerHTML = `Starts in: <span style="color:var(--ebird-orange)">${days}d ${hrs}h ${mins}m ${secs}s</span>`;
+            } else if (now < end) {
+                const diff = end - now;
+                tBar.innerHTML = `Time Remaining: ${Math.floor(diff/86400000)} days, ${Math.floor((diff%86400000)/3600000)} hours`;
             } else {
-                label.innerText = "Status";
-                display.innerText = "Finished";
+                tBar.innerText = "🏆 COMPETITION COMPLETE";
             }
 
-            // Players Logic
+            // LEADERBOARD LOGIC
             let html = "";
-            d.players.forEach(p => {
-                html += `<div class="player-card">
-                    <span class="score">${p.count}</span>
-                    <strong style="font-size: 1.2rem;">${p.name}</strong>
-                    <div style="margin-top:10px;">
-                        ${p.birds.slice(0,3).map(b => `
-                            <div style="margin-bottom:8px;">
-                                <span>• ${b.comName}</span>
-                                ${b.user_notes ? `<div class="notes">"${b.user_notes}"</div>` : ''}
-                            </div>
-                        `).join('')}
-                        ${p.count > 3 ? `<small style="color:#8b949e">...and ${p.count - 3} more</small>` : ''}
-                    </div>
+            d.players.forEach((p, i) => {
+                html += `
+                <div class="player-row" onclick="toggle('${p.user}')">
+                    <span style="color:#999">${i+1}</span>
+                    <div><span class="username">${p.user}</span><span class="realname">${p.name}</span></div>
+                    <div style="text-align:right"><span class="count-num">${p.count}</span></div>
+                </div>
+                <div id="list-${p.user}" class="bird-list">
+                    ${p.birds.map(b => `
+                        <div class="bird-entry">
+                            <strong>${b.comName}</strong>
+                            ${b.is_unique ? '<span class="badge badge-unique">ONLY ME</span>' : ''}
+                            ${b.is_first ? '<span class="badge badge-first">1ST</span>' : ''}
+                            <div style="color:#777; font-size:0.8rem;">${b.obsDt} • ${b.locName}</div>
+                            ${b.notes ? `<div class="notes">${b.notes}</div>` : ''}
+                        </div>
+                    `).join('')}
                 </div>`;
             });
             document.getElementById('leaderboard').innerHTML = html;
         }
 
-        setInterval(refresh, 1000);
-        refresh();
+        function toggle(id) {
+            const el = document.getElementById('list-' + id);
+            el.style.display = el.style.display === 'block' ? 'none' : 'block';
+        }
+
+        setInterval(update, 5000); // UI Refresh
+        setInterval(update, 300000); // Data refresh every 5 min
+        update();
     </script>
 </body>
 </html>
