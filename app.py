@@ -43,23 +43,31 @@ def leaderboard():
     for user in config.COMPETITORS:
         # NEW ENDPOINT: This pulls YOUR specific observations directly
         # It's much more reliable than the 'recent' feed for new games
-        obs = get_ebird(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {
-            "back": "30",
-            "detail": "full",
-            "includeProvisional": "true"
+        # Fetch the user's recent checklists then pull species from each
+        lists = get_ebird(f"product/lists/{user['ebird_username']}", user['api_key'], {
+            "maxResults": "200"
         })
-        
+
         user_birds = {}
-        # Ensure obs is a list before looping
-        if isinstance(obs, list):
-            for o in obs:
+        if isinstance(lists, list):
+            for cl in lists:
                 try:
-                    # Clean up the date format from eBird
-                    o_dt = datetime.strptime(o['obsDt'][:10], "%Y-%m-%d").date()
-                    if start_dt <= o_dt <= end_dt:
-                        code = o['speciesCode']
-                        if code not in user_birds:
-                            user_birds[code] = o
+                    o_dt = datetime.strptime(cl['obsDt'][:10], "%Y-%m-%d").date()
+                    if not (start_dt <= o_dt <= end_dt):
+                        continue
+                    checklist = get_ebird(f"product/checklist/view/{cl['subId']}", user['api_key'])
+                    obs = checklist.get('obs', []) if isinstance(checklist, dict) else []
+                    for o in obs:
+                        code = o.get('speciesCode')
+                        if code and code not in user_birds:
+                            user_birds[code] = {
+                                'speciesCode': code,
+                                'comName': o.get('comName', code),
+                                'obsDt': cl['obsDt'],
+                                'locName': cl.get('loc', {}).get('name', ''),
+                                'is_unique': False,
+                                'is_first': False,
+                            }
                 except: continue
         
         all_players_data.append({
