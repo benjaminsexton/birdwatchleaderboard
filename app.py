@@ -43,10 +43,10 @@ def leaderboard():
     for user in config.COMPETITORS:
         # NEW ENDPOINT: This pulls YOUR specific observations directly
         # It's much more reliable than the 'recent' feed for new games
-        obs = get_ebird(f"product/obs/user/{user['ebird_username']}", user['api_key'], {
-            "r": "world", # Look everywhere
-            "back": "30", # Look back 30 days
-            "includeProvisional": "true" # Show birds even if not 'confirmed' yet
+        obs = get_ebird(f"data/obs/{user['ebird_username']}/recent", user['api_key'], {
+            "back": "30",
+            "detail": "full",
+            "includeProvisional": "true"
         })
         
         user_birds = {}
